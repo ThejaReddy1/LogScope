@@ -16,10 +16,35 @@ on:
       - "main"
 
 jobs:
+  # ── STAGE 0: Detect Changes (The Traffic Cop) ───────────────────────────────────────
+  detect-changes:
+    name: Detect File Changes
+    runs-on: ubuntu-latest
+    outputs:
+      frontend: ${{ steps.filter.outputs.frontend }}
+      backend: ${{ steps.filter.outputs.backend }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check for modified files
+        uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            frontend:
+              - 'frontend/**'
+              - '.github/workflows/**'
+            backend:
+              - 'backend/**'
+              - '.github/workflows/**'
+
   # ── Stage 1: Frontend Code Validation ───────────────────────────────────────
   frontend-test-and-scan:
     name: Frontend Lint, Test & Scan
     runs-on: ubuntu-latest
+    needs: detect-changes
+    if: ${{ needs.detect-changes.outputs.frontend == 'true' }}
     defaults:
       run:
         working-directory: ./frontend
@@ -56,6 +81,8 @@ jobs:
   backend-test-and-scan:
     name: Backend Lint, Test & Scan
     runs-on: ubuntu-latest
+    needs: detect-changes
+    if: ${{ needs.detect-changes.outputs.backend == 'true' }}
     defaults:
       run:
         working-directory: ./backend
