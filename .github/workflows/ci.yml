@@ -71,10 +71,9 @@ jobs:
       - name: Lint with flake8
         run: |
           # Fails the pipeline if there are Python syntax errors or undefined names
-          flake8 . --count --select=E9,F63,F7,F82 --show-source ----stastistics
+          flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
           # Treats all other formatting issues as warnings (does not fail the pipeline)
-          flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --stastistics
-
+          flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
       - name: Validate static code (Syntax Check)
         run: python -m compileall .
 
