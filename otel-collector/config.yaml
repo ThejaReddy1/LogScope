@@ -1,0 +1,70 @@
+# ── OpenTelemetry Collector Configuration ─────────────────────────────────────
+# Image: otel/opentelemetry-collector-contrib:0.102.0
+#
+# Pipeline:
+#   OTLP receiver (HTTP 4318 / gRPC 4317)
+#     └─► batch processor
+#         └─► Doris exporter  (Stream Load → otel.otel_logs)
+#             └─► debug exporter (stdout sample)
+#
+# Doris exporter sends each batch as an HTTP Stream Load request to Doris FE
+# (port 8030). It maps OTLP LogRecord fields to the otel_logs column schema.
+# ──────────────────────────────────────────────────────────────────────────────
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    send_batch_size: 5000
+    timeout: 5s
+
+exporters:
+  # ── Doris Stream Load exporter ────────────────────────────────────────────
+  # dorisexporter writes to otel.otel_logs using Doris HTTP Stream Load.
+  # Field mapping (OTLP → Doris column) is built into the exporter.
+  doris:
+    endpoint: http://doris-fe:8030
+    database: otel
+    username: root
+    password: ""
+    table:
+      logs: otel_logs
+    create_schema: false
+    history_days: 0
+    timezone: UTC
+    sending_queue:
+      enabled: true
+      num_consumers: 2
+      queue_size: 100
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 60s
+      max_elapsed_time: 300s
+
+  # ── Debug exporter (sampled stdout) ──────────────────────────────────────
+  debug:
+    verbosity: basic
+    sampling_initial: 3
+    sampling_thereafter: 50
+
+service:
+  extensions: [health_check]
+  pipelines:
+    logs:
+      receivers:  [otlp]
+      processors: [batch]
+      exporters:  [doris, debug]
+  telemetry:
+    logs:
+      level: info

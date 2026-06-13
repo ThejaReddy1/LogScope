@@ -1,0 +1,229 @@
+version: "3.9"
+
+# ════════════════════════════════════════════════════════════════════════════════
+# LogScope – Full-Stack OTel Log Analysis Platform
+# Apache Doris 4.0  |  OTel Collector  |  Drain3  |  React
+#
+# Service startup order:
+#   doris-fe (healthy) ──► doris-be
+#                      ──► doris-init  (runs init.sql once)
+#                      ──► backend     (read-only Doris queries)
+#                          backend (healthy) ──► frontend
+#   otel-collector (healthy) ──► simulator  (generates Apache/Nginx logs)
+#
+# Usage:
+#   docker compose up --build
+#   open http://localhost:3000
+# ════════════════════════════════════════════════════════════════════════════════
+
+networks:
+  logscope:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.80.0/24
+
+volumes:
+  doris-fe-meta:
+  doris-be-data:
+
+services:
+
+  # ── Apache Doris 4.0 Frontend (FE) ─────────────────────────────────────────
+  # FE = query planner, metadata store, MySQL-protocol endpoint (port 9030)
+  # HTTP port 8030 is used by OTel Collector Stream Load exporter
+  doris-fe:
+    image: apache/doris:fe-latest
+    container_name: logscope-doris-fe
+    hostname: doris-fe
+    environment:
+      - FE_SERVERS=fe1:172.20.80.10:9010
+      - FE_ID=1
+      - JAVA_OPTS_FOR_JDK_17="-Dfile.encoding=UTF-8 -Djavax.security.auth.useSubjectCredsOnly=false -Xmx1g -Xms512m -XX:-UseContainerSupport -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=$LOG_DIR -Xlog:gc*,classhisto*=trace:$LOG_DIR/fe.gc.log.$CUR_DATE:time,uptime:filecount=10,filesize=50M --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens java.base/jdk.internal.ref=ALL-UNNAMED --add-opens java.base/sun.nio.ch=ALL-UNNAMED"
+    ports:
+      - "8030:8030"   # Doris HTTP / Stream Load
+      - "9030:9030"   # Doris MySQL protocol (for mysql client + PyMySQL)
+      - "9010:9010"
+      - "9020:2020"
+    volumes:
+      - doris-fe-meta:/opt/apache-doris/fe/doris-meta
+    networks:
+      logscope:
+        ipv4_address: 172.20.80.10
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8030/api/health | grep -q success || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 30
+      start_period: 90s
+    mem_limit: 2g
+    cpus: '1.5'
+
+  # ── Apache Doris 4.0 Backend (BE) ──────────────────────────────────────────
+  # BE = columnar storage engine, tablet management, inverted index files
+  doris-be:
+    image: apache/doris:be-latest
+    container_name: logscope-doris-be
+    hostname: doris-be
+    command: ["bash", "/opt/be/entrypoint.sh"]
+    environment:
+      - FE_SERVERS=fe1:172.20.80.10:9010
+      - BE_ADDR=172.20.80.11:9050
+      - SPIKE_CHECK_ULIMIT=true
+    ports:
+      - "8040:8040"   # BE HTTP (status / compaction / metrics)
+      - "8060:8060"
+      - "9050:9050"
+      - "9060:9060"
+    volumes:
+      # CRITICAL FIX: BE actually stores data at /storage, NOT /storage.HDD.
+      # Wrong mount path meant BE data was NEVER persisted — FE kept stale tablet
+      # metadata across restarts causing "alive replica num 0 / isBad=true" errors.
+      - doris-be-data:/opt/apache-doris/be/storage
+      - ./be-entrypoint.sh:/opt/be/entrypoint.sh
+    networks:
+      logscope:
+        ipv4_address: 172.20.80.11
+    depends_on:
+      doris-fe:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8040/api/health | grep -q OK || exit 1"]
+      interval: 15s
+      timeout: 10s
+      start_period: 120s
+      retries: 10
+    mem_limit: 2g
+    cpus: '1.5'
+
+
+  # ── Schema Initialiser (one-shot) ───────────────────────────────────────────
+  # Uses a plain mysql client image to run init.sql against Doris FE.
+  # Creates otel database and otel_logs table with inverted indexes.
+  doris-init:
+    image: mysql:8.0
+    container_name: logscope-doris-init
+    entrypoint: ["/bin/bash", "/init/entrypoint.sh"]
+    environment:
+      - DORIS_HOST=doris-fe
+      - DORIS_PORT=9030
+      - DORIS_USER=root
+    volumes:
+      - ./doris-init/init.sql:/init/init.sql:ro
+      - ./doris-init/entrypoint.sh:/init/entrypoint.sh:ro
+    networks:
+      - logscope
+    depends_on:
+      doris-fe:
+        condition: service_healthy
+    # Bug fix: restart:on-failure conflicts with backend's service_completed_successfully
+    # condition — if doris-init is restarted by Docker the condition evaluation gets stuck.
+    # The entrypoint.sh already has an internal 80×5s retry loop, so no restart needed.
+    restart: "no"
+
+  # ── OpenTelemetry Collector ─────────────────────────────────────────────────
+  # Receives OTLP/HTTP from simulator on port 4318.
+  # Exports log records to Doris otel.otel_logs via Stream Load (HTTP 8030).
+  # Uses opentelemetry-collector-contrib which includes the doris exporter.
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    container_name: logscope-otel-collector
+    hostname: otel-collector
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./otel-collector/config.yaml:/etc/otelcol/config.yaml:ro
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+      - "13133:13133" # Health check extension
+      - "8888:8888"   # Prometheus metrics (collector self-telemetry)
+    networks:
+      - logscope
+    depends_on:
+      doris-fe:
+        condition: service_healthy
+    healthcheck:
+      # otel-collector-contrib is a distroless image — no shell, no curl, no wget.
+      # CMD-SHELL is unusable. Use CMD form calling the collector's own healthcheck
+      # via a raw TCP connect through /dev/tcp (not available in distroless either).
+      # Safest approach for distroless: use CMD with a preinstalled check tool.
+      # Since none exist, we disable Docker-level healthcheck and let the simulator
+      # use service_started; the collector's restart:unless-stopped handles recovery.
+      test: ["NONE"]
+      disable: true
+    restart: unless-stopped
+
+  # ── Apache / Nginx Log Simulator ────────────────────────────────────────────
+  # Generates realistic Apache Combined and Nginx access/error logs.
+  # Ships them as OTLP LogRecords to the OTel Collector (port 4318).
+  # Emits ~12 records/second (BATCH_SIZE=5, EMIT_INTERVAL=0.4s).
+  simulator:
+    build:
+      context: ./simulator
+      dockerfile: Dockerfile
+    container_name: logscope-simulator
+    environment:
+      - OTEL_ENDPOINT=http://otel-collector:4318
+      - EMIT_INTERVAL=0.4
+      - BATCH_SIZE=5
+    networks:
+      - logscope
+    depends_on:
+      otel-collector:
+        # otel-collector is distroless (no shell/curl) so service_healthy is not
+        # achievable via CMD-SHELL. Use service_started — both services restart
+        # automatically (unless-stopped) so the simulator reconnects on its own.
+        condition: service_started
+    restart: unless-stopped
+
+  # ── FastAPI Backend (Drain3 + read-only Doris) ──────────────────────────────
+  # Queries otel.otel_logs via PyMySQL (Doris MySQL protocol, port 9030).
+  # Runs Drain3 pattern analysis on-demand — never writes to Doris.
+  # Exposes pre-written masking preset selection API.
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: logscope-backend
+    environment:
+      - DORIS_HOST=doris-fe
+      - DORIS_PORT=9030
+      - DORIS_USER=root
+      - DORIS_PASSWORD=
+      - DORIS_DB=otel
+    ports:
+      - "8000:8000"   # Direct API access (also proxied by Nginx at /api/)
+    networks:
+      - logscope
+    depends_on:
+      doris-fe:
+        condition: service_healthy
+      doris-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    healthcheck:
+      # python:3.11-slim has no curl. Use Python's built-in urllib — zero extra deps.
+      test: ["CMD", "python", "-c",
+             "import urllib.request, sys; r=urllib.request.urlopen('http://localhost:8000/health', timeout=4); sys.exit(0 if b'ok' in r.read() else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  # ── React Frontend (Nginx) ──────────────────────────────────────────────────
+  # Multi-stage Docker build: Node 20 compiles React → Nginx Alpine serves.
+  # Nginx proxies /api/* to the backend container.
+  # Access LogScope UI at http://localhost:3000
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: logscope-frontend
+    ports:
+      - "3000:80"     # LogScope UI
+    networks:
+      - logscope
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
