@@ -7,20 +7,28 @@ on:
       - "frontend/**"
       - "backend/**"
       - ".github/workflows/**"
+  pull_request:
+    branches:
+      - "main"
 
 jobs:
-  test-and-scan-frontend:
+  # ── Stage 1: Frontend Code Validation ───────────────────────────────────────
+  frontend-test-and-scan:
+    name: Frontend Test & Scan
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: ./frontend
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "20"
+          cache: "npm"
+          cache-dependency-path: "./frontend/package-lock.json"
 
       - name: Install dependencies
         run: mpm ci
@@ -28,7 +36,7 @@ jobs:
       - name: Run tests
         run: npm test
 
-      - name: Run Trivy SAST scanner
+      - name: Run Trivy SAST scanner (Frontend)
         uses: aquasecurity/trivy-action@master
         with:
           scan-type: "fs"
