@@ -97,7 +97,7 @@ jobs:
   # Stage 3: Frontend Docker Build & Push
   frontend-build-and-push:
     name: Frontend Build & Push
-    needs: frontend-frontend-test-and-scan
+    needs: frontend-test-and-scan
     runs-on: ubuntu-latest
     permissions:
       contents: read
