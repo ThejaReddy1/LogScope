@@ -1,8 +1,12 @@
 name: CI Pipeline for LogScope
+env:
+  REGISTRY: ghrc.io
 on:
   push:
     branches:
       - "main"
+    tags:
+      - "v*.*.*"
     paths:
       - "frontend/**"
       - "backend/**"
@@ -14,7 +18,7 @@ on:
 jobs:
   # ── Stage 1: Frontend Code Validation ───────────────────────────────────────
   frontend-test-and-scan:
-    name: Frontend Test & Scan
+    name: Frontend Lint, Test & Scan
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -33,6 +37,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Lint code (ESLint)
+        run: npm run lint
+
       - name: Validate static code (Test Build)
         run: npm run build
 
@@ -45,9 +52,9 @@ jobs:
           exit-code: "1"
           ignore-unfixed: true
           severity: "CRITICAL,HIGH"
-  # ── Stage 1: Backend Code Validation ───────────────────────────────────────
+  # ── Stage 2: Backend Code Validation ───────────────────────────────────────
   backend-test-and-scan:
-    name: Backend Test & Scan
+    name: Backend Lint, Test & Scan
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -86,3 +93,43 @@ jobs:
           exit-code: "1"
           ignore-unfixed: true
           severity: "CRITICAL,HIGH"
+
+  # Stage 3: Frontend Docker Build & Push
+  frontend-build-and-push:
+    name: Frontend Build & Push
+    needs: frontend-frontend-test-and-scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Login in to the Container registry
+        uses: actions/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata for Docker
+        id: meta-frontend
+        uses: docker/metadata-action@v5
+        with:
+          image: ${{ env.REGISTRY }}/${{ github.repository }}/frontend
+          tags: |
+            type=semver,pattern={{version}} 
+            type=semver,pattern={{major}}.{{minor}} 
+            type=sha,format=long
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push Frontend Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          file: ./frontend/Dockerfile
+          push: true
+          tags: ${{ steps.meta-frontend.outputs.tags }}
+          labels: ${{ steps.meta-frontend.outputs.labels }}
