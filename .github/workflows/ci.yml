@@ -1,6 +1,6 @@
 name: CI Pipeline for LogScope
 env:
-  REGISTRY: ghrc.io
+  REGISTRY: ghcr.io
 on:
   push:
     branches:
