@@ -5,7 +5,7 @@ Full-stack observability platform for Apache/Nginx log analysis built on:
 | Layer | Technology | Role |
 |---|---|---|
 | Ingestion | **Apache/Nginx Log Simulator** | Generates realistic access + error logs as OTLP |
-| Transport | **OTel Collector 0.102** | OTLP → Doris Stream Load pipeline |
+| Transport | **OTel Collector 0.150** | OTLP → Doris Stream Load pipeline |
 | Storage | **Apache Doris 4.0** | OTel native schema with inverted-index FTS |
 | Analysis | **FastAPI + Drain3** | Read-only queries, on-demand pattern detection |
 | UI | **React + Recharts** | 4-tab dashboard — Overview, Logs, Patterns, Settings |
